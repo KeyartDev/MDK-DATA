@@ -1,5 +1,10 @@
 import pandas as pd
-df = pd.read_csv('data/titanic.csv')
+
+def firstGroup(p):
+    if p >= 0 and p <= 100: return True
+    else: return False
+
+df = pd.read_csv('../data/titanic.csv')
 #print(df.shape); print(df.head()); df.info(); print(df.describe())
 
 kids = df[df['age'] < 12]
@@ -22,13 +27,20 @@ ax.hist(df[df['survived'] == 1]['age'], bins=30, alpha=0.5, label='Выживш�
 
 # sns.boxplot(x='pclass', y='fare', data=df, ax=ax[1]); ax[1].set_title('Цена по классу')
 # sns.barplot(x='sex', y='survived', data=df, ax=ax[2]); ax[2].set_title('Выживаемость')
-fig.tight_layout(); fig.savefig('titanic.png', dpi=120)
+fig.tight_layout(); fig.savefig('../titanic.png', dpi=120)
 plt.show()
 
 df['family'] = df['sibsp'] + df['parch']
 df['sex_num'] = df['sex'].map({'female': 1, 'male': 0})
-df.to_csv('data/clean.csv', index=False)
+df.to_csv('../data/clean.csv', index=False)
 
-cf = pd.read_csv('data/clean.csv')
+cf = pd.read_csv('../data/clean.csv')
 print(cf.isna().sum())
 
+print("Выжившие при цене билета [0:100]: ")
+
+print(df[df['fare'] <= 100]['survived'].mean())
+print("Выжившие при цене билета [100:200]: ")
+print(df[df['fare'].between(100, 200)]['survived'].mean())
+print("Выжившие при цене билета [200:300]: ")
+print(df[df['fare'].between(200, 300)]['survived'].mean())
