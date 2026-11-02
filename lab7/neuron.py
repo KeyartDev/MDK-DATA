@@ -17,7 +17,7 @@ print(((forward(X) > .5) == y).mean())
 print(bce(forward(X), y))
 
 lr, hist = 0.1, []
-for i in range(500):
+for i in range(1500):
     p = forward(X); 
     dz = p - y
     w -= lr * X.T @ dz / len(X); 
