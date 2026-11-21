@@ -1,78 +1,126 @@
+import os
+import sys
+import time
+from pathlib import Path
+
+import torch
+import matplotlib.pyplot as plt
+from PIL import Image
+
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, 'reconfigure'):
+        stream.reconfigure(encoding='utf-8', errors='replace')
+
+HERE = Path(__file__).resolve().parent
+SENT_MODEL = 'cointegrated/rubert-tiny-sentiment-balanced'
+TR_MODEL = 'Helsinki-NLP/opus-mt-ru-en'
+
+PHOTOS = [Path(p) for p in sys.argv[1:]] or [HERE / 'photo.jpg']
+
+
+def hf_size(repo_id):
+    """Размер скачанных весов модели в кэше Hugging Face."""
+    base = Path(os.environ.get('HF_HOME', Path.home() / '.cache' / 'huggingface')) / 'hub'
+    d = base / ('models--' + repo_id.replace('/', '--'))
+    if not d.exists():
+        return None
+    return sum(f.stat().st_size for f in d.rglob('*') if f.is_file())
+
+
 from transformers import pipeline
-clf = pipeline('sentiment-analysis', model='cointegrated/rubert-tiny-sentiment-balanced')
-for t in ['Отличный курс!', 'Ничего не понял', 'Нормально, но долго']:
+
+t0 = time.perf_counter()
+clf = pipeline('sentiment-analysis', model=SENT_MODEL)
+print('первый вызов (скачивание + загрузка):', round(time.perf_counter() - t0, 1), 'с')
+for t in ['Отличный курс!', 'Ничего не понял', 'Нормально, но долго', 'Сложно, но интересно', 'Больше не приду']:
     print(t, clf(t))
 
+from transformers import MarianMTModel, MarianTokenizer
 
-tr = pipeline('text-generation', model='Helsinki-NLP/opus-mt-ru-en')
-print(tr('Нейросеть — это цепочка матричных умножений.')[0]['translation_text'])
+try:
+    tok = MarianTokenizer.from_pretrained(TR_MODEL)
+except Exception:
+    from huggingface_hub import constants
+    import shutil
+    mirror = Path(r'C:\Users\Public\mdk_cache') / ('models--' + TR_MODEL.replace('/', '--'))
+    snap = next((Path(constants.HF_HUB_CACHE) / ('models--' + TR_MODEL.replace('/', '--')) / 'snapshots').iterdir())
+    mirror.mkdir(parents=True, exist_ok=True)
+    for name in ('source.spm', 'target.spm', 'vocab.json', 'tokenizer_config.json', 'special_tokens_map.json'):
+        if (snap / name).exists():
+            shutil.copy(snap / name, mirror / name)
+    tok = MarianTokenizer.from_pretrained(str(mirror))
+tr_model = MarianMTModel.from_pretrained(TR_MODEL)
 
 
-import os
+def translate(text):
+    out = tr_model.generate(**tok(text, return_tensors='pt'), max_new_tokens=64)
+    return tok.decode(out[0], skip_special_tokens=True)
+
+
+print(translate('Нейросеть — это цепочка матричных умножений.'))
+
 from huggingface_hub import constants
 print(constants.HF_HUB_CACHE)
-for d in os.listdir(constants.HF_HUB_CACHE): print(d)
-
+for d in os.listdir(constants.HF_HUB_CACHE):
+    print(' ', d)
 
 import torch
 from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
-from PIL import Image
 
-w = MobileNet_V3_Small_Weights.DEFAULT 
-m = mobilenet_v3_small(weights=w).eval()
-tf = w.transforms()
-img = Image.open('photo.jpg').convert('RGB')
-with torch.no_grad(): p = m(tf(img).unsqueeze(0)).softmax(1)[0]
-for v, i in zip(*p.topk(5)): print(f'{w.meta["categories"][i]:25s} {v:.3f}')
-
-
-import torch
-import torch.nn as nn
-from torchvision.models import mobilenet_v3_small
-from transformers import AutoModel
-
-mnist_model = nn.Sequential(
-    nn.Conv2d(1, 8, kernel_size=3),   
-    nn.ReLU(),
-    nn.MaxPool2d(2),                  
-    nn.Flatten(),
-    nn.Linear(8 * 13 * 13, 10)        
-)
-mnist_params = sum(p.numel() for p in mnist_model.parameters())
-
-mobilenet_params = sum(p.numel() for p in m.parameters())
-
-rubert_model = AutoModel.from_pretrained('cointegrated/rubert-tiny-sentiment-balanced')
-rubert_params = sum(p.numel() for p in rubert_model.parameters())
-
-print(f"MNIST (простая CNN): ~{mnist_params/1000:.1f} тыс. параметров")
-print(f"MobileNetV3 Small:   {mobilenet_params/1_000_000:.2f} млн параметров")
-print(f"RuBERT Tiny:         {rubert_params/1_000_000:.2f} млн параметров")
-
-
-import time
-
-def get_model_size_mb(model):
-    """Размер весов модели в МБ (float32)."""
-    return sum(p.numel() * p.element_size() for p in model.parameters()) / 1024**2
-
-input_tensor = tf(img).unsqueeze(0)
-start = time.time()
+w = MobileNet_V3_Small_Weights.DEFAULT; m = mobilenet_v3_small(weights=w).eval(); tf = w.transforms()
+img_tf = tf(Image.open(HERE / 'photo.jpg').convert('RGB'))
+t0 = time.perf_counter()
 with torch.no_grad():
-    for _ in range(10):
-        _ = m(input_tensor)
-mobilenet_time = (time.time() - start) / 10
+    p = m(img_tf.unsqueeze(0)).softmax(1)[0]
+mob_time = time.perf_counter() - t0
+print()
+print('MobileNetV3-small, топ-5 ImageNet:')
+for v, i in zip(*p.topk(5)):
+    print(f'  {w.meta["categories"][i]:25s} {v:.3f}')
 
-start = time.time()
-for _ in range(10):
-    _ = clf(["Тестовое предложение для замера скорости."])
-rubert_time = (time.time() - start) / 10
+fig, axes = plt.subplots(1, len(PHOTOS), figsize=(5 * len(PHOTOS), 4))
+axes = axes if len(PHOTOS) > 1 else [axes]
+for ax, path in zip(axes, PHOTOS):
+    if not path.exists():
+        print('нет файла', path, '— положи фото рядом со скриптом')
+        ax.axis('off')
+        continue
+    im = Image.open(path).convert('RGB')
+    with torch.no_grad():
+        pp = m(tf(im).unsqueeze(0)).softmax(1)[0]
+    top = pp.topk(3)
+    ax.imshow(im); ax.axis('off')
+    ax.set_title('\n'.join(f'{w.meta["categories"][i]}: {v:.2f}' for v, i in zip(*top)))
+    print(path.name, '→', ', '.join(f'{w.meta["categories"][i]} {v:.2f}' for v, i in zip(*top)))
+fig.suptitle('фото через MobileNetV3-small: топ-3 из ImageNet')
+plt.tight_layout(); plt.savefig(HERE / 'photos.png', bbox_inches='tight'); plt.show()
 
-print(f"{'Модель':<15} | {'Задача':<22} | {'Размер (МБ)':<11} | {'Время (CPU)':<11} | {'Где ошиблась'}")
-print("-" * 110)
-print(f"{'MobileNetV3':<15} | {'Классификация фото':<22} | {get_model_size_mb(m):<11.2f} | {mobilenet_time:<11.4f} | "
-      f"Путает похожие породы, теряет мелкие детали")
-print(f"{'RuBERT Tiny':<15} | {'Сентимент анализ':<22} | {get_model_size_mb(rubert_model):<11.2f} | {rubert_time:<11.4f} | "
-      f"Не понимает сарказм и сложные отрицания")
-print(f"{'MNIST CNN':<15} | {'Классификация цифр':<22} | {get_model_size_mb(mnist_model):<11.2f} | {'~0.0005':<11} | "
-      f"Путает 4/9 и 3/8 при плохом почерке")
+mnist = torch.nn.Sequential(torch.nn.Flatten(), torch.nn.Linear(784, 128), torch.nn.ReLU(), torch.nn.Linear(128, 10))
+n_mnist = sum(p.numel() for p in mnist.parameters())
+n_mob = sum(p.numel() for p in m.parameters())
+n_sent = clf.model.num_parameters()
+n_tr = tr_model.num_parameters()
+print()
+print(f'MNIST-сеть: {n_mnist:,} параметров, 10 классов')
+print(f'MobileNetV3-small: {n_mob:,} параметров, 1000 классов')
+print(f'{SENT_MODEL}: {n_sent:,} параметров')
+print(f'{TR_MODEL}: {n_tr:,} параметров')
+
+t0 = time.perf_counter(); clf('Нормально, но долго'); sent_time = time.perf_counter() - t0
+t0 = time.perf_counter(); translate('Нейросеть — это цепочка матричных умножений.'); tr_time = time.perf_counter() - t0
+
+
+def mb(repo_id):
+    s = hf_size(repo_id)
+    return f'{s / 1e6:.1f} МБ' if s else '—'
+
+
+rows = [
+    ('тональность RU', SENT_MODEL, mb(SENT_MODEL), sent_time, 'ирония, смешанные оценки'),
+    ('перевод RU→EN', TR_MODEL, mb(TR_MODEL), tr_time, 'длинные термины'),
+    ('фото ImageNet', 'mobilenet_v3_small', f'{n_mob * 4 / 1e6:.1f} МБ (fp32)', mob_time, 'не-ImageNet классы'),
+]
+print()
+print(f'{"задача":<17} {"модель":<40} {"на диске":<18} {"ответ, с":>8}  где ошибается')
+for task, name, size, sec, err in rows:
+    print(f'{task:<17} {name:<40} {size:<18} {sec:>8.2f}  {err}')
